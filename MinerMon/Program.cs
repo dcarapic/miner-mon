@@ -200,9 +200,8 @@ namespace MinerMon
                     msg.To.Add(new MailAddress(email));
                 }
                 msg.Subject = emailSubject;
-                var sending = client.SendMailAsync(msg);
-                sending.Wait(_cancelMonitor.Token);
-
+                client.Send(msg);
+                client.Dispose();
             }
             catch (TaskCanceledException)
             {

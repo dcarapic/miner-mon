@@ -23,13 +23,16 @@ namespace MinerMon
         // Set once the miner is running at least one time
         private static bool _minerWasRunning;
 
+        // How often the check is performed
+        private static TimeSpan _checkPeriod = Debugger.IsAttached ? TimeSpan.FromSeconds(5) : TimeSpan.FromMinutes(1);
+
         /// <summary>
         /// Defines the entry point of the application.
         /// </summary>
         /// <param name="args">The arguments.</param>
         static void Main(string[] args)
         {
-            Console.WriteLine($"MinerMon v{System.Reflection.Assembly.GetExecutingAssembly().GetName().Version}");
+            LogLine($"MinerMon v{System.Reflection.Assembly.GetExecutingAssembly().GetName().Version}");
             try
             {
                 // Sanity checking
@@ -44,7 +47,7 @@ namespace MinerMon
                 if (string.IsNullOrWhiteSpace(Properties.Settings.Default.MinerExecutable))
                     throw new ArgumentException("MinerExecutable parameter not set!");
 
-                Console.WriteLine($"Press any key to exit.");
+                LogLine($"Press any key to exit.");
 
                 // Initiate checking thread
                 _cancelMonitor = new CancellationTokenSource();
@@ -63,17 +66,17 @@ namespace MinerMon
                 }
                 // User pressed a key - notify main thread, wait a bit for to exit (but not too much) and then terminate.
                 _cancelMonitor.Cancel();
-                Console.WriteLine($"Please wait, stopping monitoring.");
+                LogLine($"Please wait, stopping monitoring.");
                 _monitorThread.Join(TimeSpan.FromSeconds(10));
 
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"An error occurred while monitoring: {ex}");
+                LogLine($"An error occurred while monitoring: {ex}");
             }
             finally
             {
-                Console.WriteLine($"Exited.");
+                LogLine($"Exited.");
             }
         }
 
@@ -90,18 +93,18 @@ namespace MinerMon
                 var token = _cancelMonitor.Token;
                 do
                 {
-                    Console.Write($"Checking if miner ('{Properties.Settings.Default.MinerExecutable}') is running .... ");
+                    LogLine($"Checking if miner ('{Properties.Settings.Default.MinerExecutable}') is running ... ");
 
                     // Check miner process
                     var minerProc = GetMinerProcess();
                     if (minerProc == null && !_minerWasRunning)
                     {
-                        Console.WriteLine($"not running (was not running before) - skipping check.");
+                        LogLine($"  ... is not running (was not running before) - skipping check.");
                         continue;
                     }
-                    else if(minerProc == null && _minerWasRunning)
+                    else if (minerProc == null && _minerWasRunning)
                     {
-                        Console.WriteLine($"not running (was running before) - restarting miner!");
+                        LogLine($"  ... is not running (was running before) - restarting miner!");
                         Notify($"Miner executable not running, restarting miner!");
                         if (!RestartMiner())
                             return;
@@ -110,31 +113,31 @@ namespace MinerMon
                     else
                     {
                         // Miner is working but skip checking if the miner was just started
-                        _minerWasRunning = true;
                         var minerStarted = DateTime.Now.Subtract(minerProc.StartTime);
                         if (minerStarted < Properties.Settings.Default.PoolMaximumLastUpdateTimeout)
                         {
-                            Console.WriteLine($"running but it was started {minerStarted.TotalSeconds:n0} seconds ago - skipping check.");
+                            LogLine($"  ... is running but it was started {minerStarted.TotalSeconds:n0} seconds ago - skipping check.");
                             continue;
                         }
                         else
                         {
-                            Console.WriteLine($"running.");
+                            _minerWasRunning = true;
+                            LogLine($"  ... running.");
                         }
                     }
 
                     // Check the last update of the miner pool
-                    Console.Write($"Checking the miner pool last update .... ");
+                    LogLine($"Checking the miner pool last update ... ");
                     var poolStatus = IsMinerActiveOnPool();
                     if (poolStatus == null)
                     {
                         // If the pool is down or no network just skip tge check
-                        Console.WriteLine($"could not determine pool status - skipping check.");
+                        LogLine($"  ... could not determine pool status - skipping check.");
                         continue;
                     }
-                    else if (!poolStatus.Value )
+                    else if (!poolStatus.Value)
                     {
-                        Console.WriteLine($"pool is not updated in the last {Properties.Settings.Default.PoolMaximumLastUpdateTimeout.TotalSeconds:n0} seconds - restarting miner!");
+                        LogLine($"  ... pool is not updated in the last {Properties.Settings.Default.PoolMaximumLastUpdateTimeout.TotalSeconds:n0} seconds - restarting miner!");
                         Notify($"Miner pool not updating, restarting miner!");
                         if (!RestartMiner())
                             return;
@@ -142,15 +145,15 @@ namespace MinerMon
                     }
                     else
                     {
-                        Console.WriteLine($"miner pool is updated - all OK.");
+                        LogLine($"  ... miner pool is updated - all OK.");
                     }
                 } // now wait one minute (or until canceled)
-                while (!token.WaitHandle.WaitOne(TimeSpan.FromMinutes(1)));
+                while (!token.WaitHandle.WaitOne(_checkPeriod));
 
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"An error occurred while monitoring: {ex}");
+                LogLine($"An error occurred while monitoring: {ex}");
             }
 
         }
@@ -166,27 +169,27 @@ namespace MinerMon
                 return;
 
             var emailSubject = $"MinerMon - {Properties.Settings.Default.MonitorName} - {subject}";
-            if(Debugger.IsAttached)
+            if (Debugger.IsAttached)
             {
-                Console.WriteLine($"Debugger attached, skipping email: {emailSubject}");
+                LogLine($"Debugger attached, skipping email: {emailSubject}");
                 return;
             }
-            Console.WriteLine($"Sending email: {emailSubject}");
+            LogLine($"Sending email: {emailSubject}");
             try
             {
                 if (string.IsNullOrWhiteSpace(Properties.Settings.Default.SMTPServer))
                 {
-                    Console.WriteLine("- SMTP server not defined, email not sent!");
+                    LogLine("- SMTP server not defined, email not sent!");
                     return;
                 }
                 if (string.IsNullOrWhiteSpace(Properties.Settings.Default.EmailRecipients))
                 {
-                    Console.WriteLine("- Email recipients not defined, email not sent!");
+                    LogLine("- Email recipients not defined, email not sent!");
                     return;
                 }
                 if (string.IsNullOrWhiteSpace(Properties.Settings.Default.EmailSender))
                 {
-                    Console.WriteLine("- Email sender not defined, email not sent!");
+                    LogLine("- Email sender not defined, email not sent!");
                     return;
                 }
                 SmtpClient client = new SmtpClient(Properties.Settings.Default.SMTPServer, Properties.Settings.Default.SMTPPort);
@@ -201,13 +204,13 @@ namespace MinerMon
                 sending.Wait(_cancelMonitor.Token);
 
             }
-            catch(TaskCanceledException)
+            catch (TaskCanceledException)
             {
                 return;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"- Email sending failed: {ex}");
+                LogLine($"- Email sending failed: {ex}");
             }
         }
 
@@ -221,11 +224,37 @@ namespace MinerMon
             if (_cancelMonitor.IsCancellationRequested)
                 return false;
 
-            Console.WriteLine($"Stopping miner '{Properties.Settings.Default.StopMinerCommand}'");
+            LogLine($"Stopping miner '{Properties.Settings.Default.StopMinerCommand}' ... ");
             var proc = Process.Start("cmd.exe", $"/c {Properties.Settings.Default.StopMinerCommand}");
-            proc.WaitForExit();
+            proc.WaitForExit(1000);
 
-            Console.WriteLine($"Starting miner '{Properties.Settings.Default.StartMinerCommand}'");
+
+            if (_cancelMonitor.IsCancellationRequested)
+                return false;
+
+            try
+            {
+                // Give miner 5 seconds to shut-down
+                Task.Delay(5000).Wait(_cancelMonitor.Token);
+            }
+            catch (TaskCanceledException)
+            {
+                // If we were canceled then just exit
+                return false;
+            }
+
+            if (_cancelMonitor.IsCancellationRequested)
+                return false;
+
+            if (GetMinerProcess() == null)
+            {
+                LogLine($"  ... failed - stopping monitoring!");
+                Notify("Failed to stop miner executable ... stopping monitoring!");
+                return false;
+            }
+            LogLine($"  ... stopped.");
+
+            LogLine($"Starting miner '{Properties.Settings.Default.StartMinerCommand}' ...");
             Process.Start("cmd.exe", $"/c {Properties.Settings.Default.StartMinerCommand}");
 
             try
@@ -238,11 +267,13 @@ namespace MinerMon
                 // If we were canceled then just exit
                 return false;
             }
-            if(GetMinerProcess() == null)
+            if (GetMinerProcess() == null)
             {
+                LogLine($"  ... failed - stopping monitoring!");
                 Notify("Failed to restart miner executable ... stopping monitoring!");
                 return false;
             }
+            LogLine($"  ... started.");
             return true;
         }
 
@@ -251,7 +282,7 @@ namespace MinerMon
         /// </summary>
         static Process GetMinerProcess()
         {
-            foreach(var proc in Process.GetProcesses())
+            foreach (var proc in Process.GetProcesses())
             {
                 // Immediately check if we need to exit
                 if (_cancelMonitor.IsCancellationRequested)
@@ -293,10 +324,10 @@ namespace MinerMon
             catch (TaskCanceledException)
             {
                 return null;
-            } 
+            }
             catch (Exception ex)
             {
-                Console.WriteLine($"- Could not query miner pool for stats: {ex.Message}");
+                LogLine($"- Could not query miner pool for stats: {ex.Message}");
                 return null;
             }
         }
@@ -306,12 +337,19 @@ namespace MinerMon
         /// </summary>
         /// <param name="unixTimeStamp">The unix time stamp.</param>
         /// <returns></returns>
-        public static DateTime UnixTimeStampToDateTime(double unixTimeStamp)
+        static DateTime UnixTimeStampToDateTime(double unixTimeStamp)
         {
             // Unix timestamp is seconds past epoch
             System.DateTime dtDateTime = new DateTime(1970, 1, 1, 0, 0, 0, 0, System.DateTimeKind.Utc);
             dtDateTime = dtDateTime.AddSeconds(unixTimeStamp).ToLocalTime();
             return dtDateTime;
         }
+
+        static void LogLine(string text)
+        {
+            Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} | {text}");
+        }
+
+
     }
 }

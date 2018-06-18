@@ -6,9 +6,9 @@ using System.Runtime.InteropServices;
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
 [assembly: AssemblyTitle("MinerMon")]
-[assembly: AssemblyDescription("")]
+[assembly: AssemblyDescription("Miner monitor is a small console application which monitors a (Monero) pool miner.")]
 [assembly: AssemblyConfiguration("")]
-[assembly: AssemblyCompany("")]
+[assembly: AssemblyCompany("Dalibor Carapic")]
 [assembly: AssemblyProduct("MinerMon")]
 [assembly: AssemblyCopyright("Copyright ©  2018")]
 [assembly: AssemblyTrademark("")]

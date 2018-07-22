@@ -335,8 +335,8 @@ namespace MinerMon
 
             try
             {
-                // wait one more second
-                Task.Delay(1000).Wait(_cancelMonitor.Token);
+                // wait 10 seconds
+                Task.Delay(10000).Wait(_cancelMonitor.Token);
             }
             catch (TaskCanceledException)
             {

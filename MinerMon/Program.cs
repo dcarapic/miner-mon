@@ -26,6 +26,8 @@ namespace MinerMon
         // How often the check is performed
         private static TimeSpan _checkPeriod = Debugger.IsAttached ? TimeSpan.FromSeconds(5) : TimeSpan.FromMinutes(1);
 
+        private static object _lock = new object();
+
         /// <summary>
         /// Defines the entry point of the application.
         /// </summary>
@@ -37,7 +39,7 @@ namespace MinerMon
             {
                 // Sanity checking
                 if (string.IsNullOrWhiteSpace(Properties.Settings.Default.PoolStatsAddressUrl))
-                    throw new ArgumentException("PoolStatsAddressUrl parameter not set!");
+                    LogLine($"PoolStatsAddressUrl not set in configuration file, ignoring pool monitoring!");
                 if (string.IsNullOrWhiteSpace(Properties.Settings.Default.MonitorName))
                     throw new ArgumentException("MonitorName parameter not set!");
                 if (string.IsNullOrWhiteSpace(Properties.Settings.Default.StartMinerCommand))
@@ -47,7 +49,7 @@ namespace MinerMon
                 if (string.IsNullOrWhiteSpace(Properties.Settings.Default.MinerExecutable))
                     throw new ArgumentException("MinerExecutable parameter not set!");
 
-                LogLine($"Press any key to exit.");
+                PrintInfo();
 
                 // Initiate checking thread
                 _cancelMonitor = new CancellationTokenSource();
@@ -56,18 +58,53 @@ namespace MinerMon
                 _monitorThread.Start();
 
                 // Monitor for key-press or the main thread exit
-                while (!Console.KeyAvailable)
+                ConsoleKey key;
+                while(true)
                 {
-                    if (_monitorThread.Join(100))
+                    if (Console.KeyAvailable)
                     {
-                        // Main thread exited - this only happens if there was an error, just exit.
-                        return;
+                        key = Console.ReadKey().Key;
+                        if (key == ConsoleKey.K)
+                        {
+                            lock(_lock)
+                            {
+                                StopMiner();
+                            }
+                        }
+                        else if (key == ConsoleKey.R)
+                        {
+                            lock (_lock)
+                            {
+                                if (!StopMiner())
+                                    continue;
+                                StartMiner();
+                            }
+                        }
+                        else if (key == ConsoleKey.X)
+                        {
+                            break;
+                        }
+                        else
+                        {
+                            PrintInfo();
+                        }
                     }
+                    else
+                    {
+                        if (_monitorThread.Join(100))
+                        {
+                            // Main thread exited - this only happens if there was an error, just exit.
+                            return;
+                        }
+                    }
+
                 }
+
                 // User pressed a key - notify main thread, wait a bit for to exit (but not too much) and then terminate.
                 _cancelMonitor.Cancel();
                 LogLine($"Please wait, stopping monitoring.");
                 _monitorThread.Join(TimeSpan.FromSeconds(10));
+
 
             }
             catch (Exception ex)
@@ -78,6 +115,16 @@ namespace MinerMon
             {
                 LogLine($"Exited.");
             }
+        }
+
+        static void PrintInfo()
+        {
+            LogLine($"");
+            LogLine($"Press key to execute:");
+            LogLine($"K - Force kill miner");
+            LogLine($"R - Restart miner");
+            LogLine($"X - Exit monitor miner (does not kill miner process)");
+            LogLine($"");
         }
 
         static void BackgroundThread(object ignored)
@@ -93,59 +140,79 @@ namespace MinerMon
                 var token = _cancelMonitor.Token;
                 do
                 {
-                    LogLine($"Checking if miner ('{Properties.Settings.Default.MinerExecutable}') is running ... ");
+                    lock (_lock)
+                    {
+                        LogLine($"Checking if miner ('{Properties.Settings.Default.MinerExecutable}') is running ... ");
 
-                    // Check miner process
-                    var minerProc = GetMinerProcess();
-                    if (minerProc == null && !_minerWasRunning)
-                    {
-                        LogLine($"  ... is not running (was not running before) - skipping check.");
-                        continue;
-                    }
-                    else if (minerProc == null && _minerWasRunning)
-                    {
-                        LogLine($"  ... is not running (was running before) - restarting miner!");
-                        Notify($"Miner executable not running, restarting miner!");
-                        if (!RestartMiner())
-                            return;
-                        continue;
-                    }
-                    else
-                    {
-                        // Miner is working but skip checking if the miner was just started
-                        var minerStarted = DateTime.Now.Subtract(minerProc.StartTime);
-                        if (minerStarted < Properties.Settings.Default.PoolMaximumLastUpdateTimeout)
+                        // Check miner process
+                        var minerProc = GetMinerProcess();
+                        if (minerProc == null && !_minerWasRunning)
                         {
-                            LogLine($"  ... is running but it was started {minerStarted.TotalSeconds:n0} seconds ago - skipping check.");
+                            LogLine($"  ... is not running (was not running before) - skipping check.");
                             continue;
+                        }
+                        else if (minerProc == null && _minerWasRunning)
+                        {
+                            LogLine($"  ... is not running (was running before) - restarting miner!");
+                            if (StartMiner())
+                            {
+                                Notify($"Miner executable was not running, miner started.");
+                                continue;
+                            }
+                            else
+                            {
+                                Notify($"Miner executable was not running, failed to restart miner!");
+                                return;
+                            }
                         }
                         else
                         {
-                            _minerWasRunning = true;
-                            LogLine($"  ... running.");
+                            // Miner is working but skip checking if the miner was just started
+                            var minerStarted = DateTime.Now.Subtract(minerProc.StartTime);
+                            if (minerStarted < Properties.Settings.Default.PoolMaximumLastUpdateTimeout)
+                            {
+                                LogLine($"  ... is running but it was started {minerStarted.TotalSeconds:n0} seconds ago - skipping check.");
+                                continue;
+                            }
+                            else
+                            {
+                                _minerWasRunning = true;
+                                LogLine($"  ... running.");
+                            }
                         }
-                    }
 
-                    // Check the last update of the miner pool
-                    LogLine($"Checking the miner pool last update ... ");
-                    var poolStatus = IsMinerActiveOnPool();
-                    if (poolStatus == null)
-                    {
-                        // If the pool is down or no network just skip tge check
-                        LogLine($"  ... could not determine pool status - skipping check.");
-                        continue;
-                    }
-                    else if (!poolStatus.Value)
-                    {
-                        LogLine($"  ... pool is not updated in the last {Properties.Settings.Default.PoolMaximumLastUpdateTimeout.TotalSeconds:n0} seconds - restarting miner!");
-                        Notify($"Miner pool not updating, restarting miner!");
-                        if (!RestartMiner())
-                            return;
-                        continue;
-                    }
-                    else
-                    {
-                        LogLine($"  ... miner pool is updated - all OK.");
+                        // Check the last update of the miner pool
+                        LogLine($"Checking the miner pool last update ... ");
+                        var poolStatus = IsMinerActiveOnPool();
+                        if (poolStatus == null)
+                        {
+                            // If the pool is down or no network just skip tge check
+                            LogLine($"  ... could not determine pool status - skipping check.");
+                            continue;
+                        }
+                        else if (!poolStatus.Value)
+                        {
+                            LogLine($"  ... pool is not updated in the last {Properties.Settings.Default.PoolMaximumLastUpdateTimeout.TotalSeconds:n0} seconds - restarting miner!");
+                            if (!StopMiner())
+                            {
+                                Notify($"Miner pool not updating, failed to stop miner!");
+                                return;
+                            }
+                            if (StartMiner())
+                            {
+                                Notify($"Miner pool not updating, miner re-started.");
+                                continue;
+                            }
+                            else
+                            {
+                                Notify($"Miner pool not updating, failed to restart miner!");
+                                return;
+                            }
+                        }
+                        else
+                        {
+                            LogLine($"  ... miner pool is updated - all OK.");
+                        }
                     }
                 } // now wait one minute (or until canceled)
                 while (!token.WaitHandle.WaitOne(_checkPeriod));
@@ -217,24 +284,59 @@ namespace MinerMon
         /// Restart the miner.
         /// </summary>
         /// <returns>True if the restart was successful and the miner is working.</returns>
-        static bool RestartMiner()
+        static bool StartMiner()
+        {
+            LogLine($"Starting miner '{Properties.Settings.Default.StartMinerCommand}' ...");
+            Process.Start("cmd.exe", $"/c {Properties.Settings.Default.StartMinerCommand}");
+
+            try
+            {
+                // Give miner 10 seconds to start-up
+                Task.Delay(10000).Wait(_cancelMonitor.Token);
+            }
+            catch (TaskCanceledException)
+            {
+                // If we were canceled then just exit
+                return false;
+            }
+            if (GetMinerProcess() == null)
+            {
+                LogLine($"  ... failed - stopping monitoring!");
+                return false;
+            }
+            LogLine($"  ... started.");
+            return true;
+        }
+
+
+        /// <summary>
+        /// Restart the miner.
+        /// </summary>
+        /// <returns>True if the restart was successful and the miner is working.</returns>
+        static bool StopMiner()
         {
             // Immediately check if we need to exit
             if (_cancelMonitor.IsCancellationRequested)
                 return false;
 
             LogLine($"Stopping miner '{Properties.Settings.Default.StopMinerCommand}' ... ");
-            var proc = Process.Start("cmd.exe", $"/c {Properties.Settings.Default.StopMinerCommand}");
-            proc.WaitForExit(1000);
+            if (GetMinerProcess() == null)
+            {
+                LogLine($"  ... miner not started!");
+                return true;
+            }
 
+
+            var proc = Process.Start("cmd.exe", $"/c {Properties.Settings.Default.StopMinerCommand}");
+            proc.WaitForExit(5000);
 
             if (_cancelMonitor.IsCancellationRequested)
                 return false;
 
             try
             {
-                // Give miner 5 seconds to shut-down
-                Task.Delay(5000).Wait(_cancelMonitor.Token);
+                // wait one more second
+                Task.Delay(1000).Wait(_cancelMonitor.Token);
             }
             catch (TaskCanceledException)
             {
@@ -245,34 +347,12 @@ namespace MinerMon
             if (_cancelMonitor.IsCancellationRequested)
                 return false;
 
-            if (GetMinerProcess() == null)
+            if (GetMinerProcess() != null)
             {
                 LogLine($"  ... failed - stopping monitoring!");
-                Notify("Failed to stop miner executable ... stopping monitoring!");
                 return false;
             }
             LogLine($"  ... stopped.");
-
-            LogLine($"Starting miner '{Properties.Settings.Default.StartMinerCommand}' ...");
-            Process.Start("cmd.exe", $"/c {Properties.Settings.Default.StartMinerCommand}");
-
-            try
-            {
-                // Give miner 5 seconds to start-up
-                Task.Delay(5000).Wait(_cancelMonitor.Token);
-            }
-            catch (TaskCanceledException)
-            {
-                // If we were canceled then just exit
-                return false;
-            }
-            if (GetMinerProcess() == null)
-            {
-                LogLine($"  ... failed - stopping monitoring!");
-                Notify("Failed to restart miner executable ... stopping monitoring!");
-                return false;
-            }
-            LogLine($"  ... started.");
             return true;
         }
 
@@ -306,6 +386,8 @@ namespace MinerMon
             // Immediately check if we need to exit
             if (_cancelMonitor.IsCancellationRequested)
                 return null;
+            if (string.IsNullOrEmpty(Properties.Settings.Default.PoolStatsAddressUrl))
+                return true;
 
             try
             {
